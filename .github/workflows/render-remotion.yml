@@ -1,0 +1,87 @@
+name: Render Remotion Video
+
+# Renders all 3 BB heist compositions (long + 2 Shorts) on GitHub Actions.
+# Based on the remotion-motion-graphics skill's assets/render-remotion.yml,
+# extended to render every composition in one run.
+# Binary assets (images/audio/fonts) are NOT in the repo (MCP push is
+# text-only) — they arrive as a tarball downloaded in the "Download assets" step.
+# After rendering, the MP4s are attached to a GitHub Release so they can be
+# downloaded without extra auth (repo is public).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      crf:
+        description: "H.264 CRF quality (16-20 recommended)"
+        required: true
+        default: "17"
+
+permissions:
+  contents: write
+
+env:
+  ASSETS_URL: "https://muse.ai/files/1516211334902163/2270096490223579/ri2klk6po2kqd7fo8dcxovsb/bb-heist-assets.tar.gz"
+  CRF: "${{ github.event.inputs.crf || '17' }}"
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Ensure Remotion browser is available
+        run: npx remotion browser ensure
+
+      - name: Download assets tarball
+        run: |
+          mkdir -p public
+          curl -L "$ASSETS_URL" -o /tmp/assets.tar.gz
+          tar -xzf /tmp/assets.tar.gz -C public
+          ls -la public/images public/audio public/fonts public/sfx
+
+      - name: Create output directory
+        run: mkdir -p out
+
+      - name: Render long video (1920x1080)
+        run: |
+          npx remotion render src/index.ts MainVideo out/bb-heist-long.mp4 \
+            --codec h264 --crf "$CRF" --concurrency=50%
+
+      - name: Render Short 1 (1080x1920)
+        run: |
+          npx remotion render src/index.ts Short1 out/bb-heist-shorts-1.mp4 \
+            --codec h264 --crf "$CRF" --concurrency=50%
+
+      - name: Render Short 2 (1080x1920)
+        run: |
+          npx remotion render src/index.ts Short2 out/bb-heist-shorts-2.mp4 \
+            --codec h264 --crf "$CRF" --concurrency=50%
+
+      - name: Upload rendered videos artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remotion-renders
+          path: out/*.mp4
+          retention-days: 7
+
+      - name: Publish release with MP4s
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="render-$(date +%Y%m%d-%H%M%S)"
+          gh release create "$TAG" out/bb-heist-long.mp4 out/bb-heist-shorts-1.mp4 out/bb-heist-shorts-2.mp4 \
+            --title "BB heist Remotion render $TAG" \
+            --notes "Long video (1920x1080, ~9m39s) + 2 Shorts (1080x1920). Rendered by the Render Remotion Video workflow."
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
